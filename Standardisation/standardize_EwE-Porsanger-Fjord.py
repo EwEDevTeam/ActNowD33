@@ -25,6 +25,7 @@ INDICATOR_MAP = {
     "phytoplankton_biomass": IndicatorEnum.PHYTOPLANKTON_BIOMASS,
     "zooplankton_biomass": IndicatorEnum.ZOOPLANKTON_BIOMASS,
     "fish_biomass": IndicatorEnum.FISH_BIOMASS,
+    "total_catch": IndicatorEnum.TOTAL_CATCH,
     "total_consumer_catch": IndicatorEnum.CONSUMER_CATCH,
     "total_pelagic_fish_catch": IndicatorEnum.PELAGIC_CATCH,
     "total_demersal_fish_catch": IndicatorEnum.DEMERSAL_CATCH,
@@ -37,14 +38,14 @@ INDICATOR_MAP = {
 
 CLIMATE_ONLY_SCENARIO_MAP = {
     "Baseline_RCP2.6": [ScenarioEnum.GS],
-    "Baseline_RCP4.5": [ScenarioEnum.IN],
+    "Baseline_RCP4.5": [ScenarioEnum.IQ],
     "Baseline_RCP8.5": [ScenarioEnum.RR, ScenarioEnum.WM],
 }
 
 
 CLIMATE_MANAGEMENT_SCENARIO_MAP = {
     "Int_Sustainability": ScenarioEnum.GS,
-    "Int_Inequality": ScenarioEnum.IN,
+    "Int_Inequality": ScenarioEnum.IQ,
     "Int_RegionalRivalry": ScenarioEnum.RR,
     "Int_WorldMarkets": ScenarioEnum.WM,
 }
@@ -52,7 +53,7 @@ CLIMATE_MANAGEMENT_SCENARIO_MAP = {
 
 CANONICAL_SCENARIOS = [
     ScenarioEnum.GS,
-    ScenarioEnum.IN,
+    ScenarioEnum.IQ,
     ScenarioEnum.RR,
     ScenarioEnum.WM,
 ]
@@ -157,11 +158,6 @@ def standardise_fjord_csv(
         case_folder=output_root,
         historical_reference_start_year=historical_reference_start_year,
         historical_reference_end_year=historical_reference_end_year,
-        logger=logger,
-    )
-
-    write_legacy_product_aliases(
-        case_folder=output_root,
         logger=logger,
     )
 
@@ -475,71 +471,10 @@ def write_relative_to_own_historical_anchor(
                 )
 
 
-LEGACY_PRODUCT_ALIASES = {
-    "relative_intervention": "relative_climate_intervention",
-    "relative_historical": "relative_historical_intervention",
-}
-
-
-DEPRECATION_README_TEMPLATE = """# Deprecated ActNow product folder
-
-This folder is retained as a temporary backwards-compatibility alias.
-
-Legacy product:
-
-```text
-{legacy_product}
-```
-
-Canonical replacement:
-
-```text
-{canonical_product}
-```
-
-The CSV files in this folder are copied from the canonical replacement product.
-Use the canonical product in new plotting and analysis code.
-"""
-
-
-def write_legacy_product_aliases(
-    case_folder: Path,
-    logger: logging.Logger,
-) -> None:
-    for legacy_product, canonical_product in LEGACY_PRODUCT_ALIASES.items():
-        canonical_folder = case_folder / canonical_product
-        legacy_folder = case_folder / legacy_product
-
-        if not canonical_folder.exists():
-            logger.warning(
-                f"Cannot write legacy alias {legacy_product}; "
-                f"missing canonical folder: {canonical_folder}"
-            )
-            continue
-
-        if legacy_folder.exists():
-            shutil.rmtree(legacy_folder)
-
-        shutil.copytree(canonical_folder, legacy_folder)
-
-        readme_file = legacy_folder / "README_DEPRECATED.md"
-        readme_file.write_text(
-            DEPRECATION_README_TEMPLATE.format(
-                legacy_product=legacy_product,
-                canonical_product=canonical_product,
-            ),
-            encoding="utf-8",
-        )
-
-        logger.info(
-            f"Wrote legacy compatibility alias: "
-            f"{legacy_product} -> {canonical_product}"
-        )
-
 
 if __name__ == "__main__":
     standardise_fjord_csv(
-        input_csv="cs02_norwegian-fjord_ewe/indicator_time_series_porsangerfjord.csv",
+        input_csv="cs02_norwegian-fjord_ewe/raw/indicator_time_series_porsangerfjord.csv",
         output_root="cs02_norwegian-fjord_ewe/for_analysis",
         case_study="cs02",
         area="norwegian-fjord",

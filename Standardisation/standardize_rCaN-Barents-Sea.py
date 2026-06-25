@@ -8,7 +8,6 @@ from helpers.actnow_helpers import (
     ScenarioEnum,
     FolderTypeEnum,
     detect_cadence_from_dates,
-    INTERCOMPARISON_REFERENCE_PERIOD,
 )
 
 
@@ -28,45 +27,43 @@ INDICATOR_COLUMN_MAP = {
 }
 
 
-# Shared ActNow intercomparison reference period.
-# Used to anchor all historical-relative products across models.
-HISTORICAL_REFERENCE_YEARS = INTERCOMPARISON_REFERENCE_PERIOD
+# rCaN does not represent the full lower trophic spectrum used by some other MEMs.
+# Benjamin Planque confirmed that, for this model output, consumer_biomass and
+# total_biomass should be treated as equivalent ActNow indicators.
+TOTAL_BIOMASS_FALLBACK_SOURCE = "consumer_biomass"
+
+
+CONTROL_SCENARIO = "Baseline"
 
 
 SCENARIO_MAP = {
-    # Historical context only. Used for continuity checks, not as the
-    # historical/control reference for relative products.
+    # Historical context only. Used for continuity checks / inspection only.
+    # It is not used as a reference for relative products.
     "B-past": {
         "scenario_folder": "historical",
         "series_type": "historical_context",
-        "is_historical": False,
     },
 
-    # Baseline is the historical/control reference used for normalisation.
-    # B-past is retained as historical context only and must not be used as
-    # the historical baseline for relative products.
-    "Baseline": {
-        "scenario_folder": "baseline",
-        "series_type": "reference",
-        "is_historical": True,
+    # rCaN control trajectory. This is not a fixed historical reference period.
+    # It is a time-varying control simulation aligned with the scenario years.
+    CONTROL_SCENARIO: {
+        "scenario_folder": "control",
+        "series_type": "control",
     },
     "BaselineRieu": {
         "scenario_folder": "baseline-rieu",
         "series_type": "reference",
-        "is_historical": False,
     },
 
     # Global Sustainability.
     "GS-b": {
         "scenario_folder": ScenarioEnum.GS,
         "series_type": FolderTypeEnum.CLIMATE_ONLY,
-        "is_historical": False,
     },
     "GS-i": {
         "scenario_folder": ScenarioEnum.GS,
         "series_type": FolderTypeEnum.CLIMATE_MANAGEMENT,
         "paired_with": "GS-b",
-        "is_historical": False,
     },
 
     # Regional Rivalry. The hot-war and cold-war intervention variants are
@@ -75,50 +72,39 @@ SCENARIO_MAP = {
     "RR-b": {
         "scenario_folder": ScenarioEnum.RR,
         "series_type": FolderTypeEnum.CLIMATE_ONLY,
-        "is_historical": False,
     },
     "RRCW-i": {
         "scenario_folder": "rr-cw",
         "series_type": FolderTypeEnum.CLIMATE_MANAGEMENT,
         "paired_with": "RR-b",
-        "is_historical": False,
     },
     "RRHW-i": {
         "scenario_folder": "rr-hw",
         "series_type": FolderTypeEnum.CLIMATE_MANAGEMENT,
         "paired_with": "RR-b",
-        "is_historical": False,
     },
 
     # World Markets.
     "WM-b": {
         "scenario_folder": ScenarioEnum.WM,
         "series_type": FolderTypeEnum.CLIMATE_ONLY,
-        "is_historical": False,
     },
     "WM-i": {
         "scenario_folder": ScenarioEnum.WM,
         "series_type": FolderTypeEnum.CLIMATE_MANAGEMENT,
         "paired_with": "WM-b",
-        "is_historical": False,
     },
 }
+
 
 CANONICAL_SERIES_TYPES = {
     FolderTypeEnum.CLIMATE_ONLY.value,
     FolderTypeEnum.CLIMATE_MANAGEMENT.value,
 }
 
-RELATIVE_HISTORICAL_CLIMATE = "relative_historical_climate"
 RELATIVE_CLIMATE_INTERVENTION = "relative_climate_intervention"
-RELATIVE_HISTORICAL_INTERVENTION = "relative_historical_intervention"
-
-# Phase-1 compatibility aliases. These duplicate the new canonical products
-# under the legacy folder names expected by the current plotting utilities.
-LEGACY_PRODUCT_ALIASES = {
-    "relative_intervention": RELATIVE_CLIMATE_INTERVENTION,
-    "relative_historical": RELATIVE_HISTORICAL_INTERVENTION,
-}
+RELATIVE_CONTROL_CLIMATE = "relative_control_climate"
+RELATIVE_CONTROL_INTERVENTION = "relative_control_intervention"
 
 
 def enum_value(value) -> str:
@@ -134,7 +120,7 @@ def setup_logging(output_root: str | Path) -> logging.Logger:
 
     log_file = output_root / "standardization.log"
 
-    logger = logging.getLogger("actnow-standardizer")
+    logger = logging.getLogger("actnow-rcan-standardizer")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 
@@ -160,56 +146,35 @@ def relative_percent(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     return 100.0 * ((numerator / denominator) - 1.0)
 
 
-def check_historical_gap(df: pd.DataFrame, logger: logging.Logger) -> None:
-    historical_mask = df["scenario"].map(lambda s: SCENARIO_MAP[s]["is_historical"])
-
-    historical_df = df[historical_mask].copy()
-    scenario_df = df[~historical_mask].copy()
-
-    if historical_df.empty:
-        logger.warning("No historical data found for continuity check.")
-        return
-
-    if scenario_df.empty:
-        logger.warning("No scenario data found for continuity check.")
-        return
-
-    historical_last_year = int(historical_df["Year"].max())
-
-    grouped = scenario_df.groupby(["scenario", "area", "model"])
-
-    for (scenario, area, model), group_df in grouped:
-        scenario_first_year = int(group_df["Year"].min())
-        year_gap = scenario_first_year - historical_last_year
-
-        if year_gap > 1:
-            logger.warning(
-                f"Gap detected between historical and scenario data: "
-                f"{scenario} / {area} / {model} "
-                f"(historical ends {historical_last_year}, "
-                f"scenario starts {scenario_first_year}, "
-                f"gap = {year_gap} years)"
-            )
-
-
 def normalise_rcan_output(
     input_csv: str | Path,
     output_root: str | Path,
-    historical_reference_years: list[int] | None = None,
     skip_all_na: bool = True,
+    validation_csv: str | Path | None = None,
 ) -> None:
     input_csv = Path(input_csv)
     output_root = Path(output_root)
 
-    if historical_reference_years is None:
-        historical_reference_years = HISTORICAL_REFERENCE_YEARS
-
     logger = setup_logging(output_root)
 
     logger.info(f"Reading input CSV: {input_csv}")
-    logger.info(f"Historical reference years: {historical_reference_years}")
+    logger.info(
+        "rCaN uses a time-varying control trajectory rather than a fixed "
+        "historical reference period. Writing relative_control_* products "
+        "instead of relative_historical_* products."
+    )
 
     df = pd.read_csv(input_csv)
+
+    if (
+        "total_biomass" not in df.columns
+        and TOTAL_BIOMASS_FALLBACK_SOURCE in df.columns
+    ):
+        df["total_biomass"] = df[TOTAL_BIOMASS_FALLBACK_SOURCE]
+        logger.info(
+            "Added total_biomass from consumer_biomass. "
+            "For rCaN these indicators were confirmed to be equivalent."
+        )
 
     required = {"scenario", "Year", "area", "model"}
     missing = required - set(df.columns)
@@ -240,8 +205,6 @@ def normalise_rcan_output(
 
     logger.info(f"Recognised indicators: {', '.join(available_indicators)}")
 
-    check_historical_gap(df=df, logger=logger)
-
     write_absolute_time_series(
         df=df,
         output_root=output_root,
@@ -256,13 +219,19 @@ def normalise_rcan_output(
         logger=logger,
     )
 
-    write_relative_historical_time_series(
+    write_relative_control_time_series(
         df=df,
         output_root=output_root,
         available_indicators=available_indicators,
-        historical_reference_years=historical_reference_years,
         logger=logger,
     )
+
+    if validation_csv is not None:
+        validate_against_expected_output(
+            validation_csv=validation_csv,
+            output_root=output_root,
+            logger=logger,
+        )
 
     logger.info("Standardisation complete.")
 
@@ -274,7 +243,6 @@ def write_absolute_time_series(
     skip_all_na: bool,
     logger: logging.Logger,
 ) -> None:
-
     for scenario, scenario_df in df.groupby("scenario"):
         scenario_info = SCENARIO_MAP[scenario]
         scenario_folder = enum_value(scenario_info["scenario_folder"])
@@ -447,24 +415,134 @@ def write_relative_climate_intervention_time_series(
                 )
 
 
-def get_historical_anchor_rows(
+def write_relative_control_time_series(
     df: pd.DataFrame,
-    area: str,
-    model: str,
-    historical_reference_years: list[int],
-) -> pd.DataFrame:
-    historical_scenarios = []
+    output_root: Path,
+    available_indicators: list[str],
+    logger: logging.Logger,
+) -> None:
+    control_df = df[df["scenario"] == CONTROL_SCENARIO].copy()
 
-    for scenario_name, scenario_info in SCENARIO_MAP.items():
-        if scenario_info["is_historical"]:
-            historical_scenarios.append(scenario_name)
+    if control_df.empty:
+        logger.warning(
+            f"Missing rCaN control scenario '{CONTROL_SCENARIO}'. "
+            "Cannot write relative_control products."
+        )
+        return
 
-    return df[
-        (df["scenario"].isin(historical_scenarios))
-        & (df["area"] == area)
-        & (df["model"] == model)
-        & (df["Year"].isin(historical_reference_years))
-    ].copy()
+    grouped = df.groupby(["scenario", "area", "model"])
+
+    for (scenario, area, model), scenario_df in grouped:
+        scenario_info = SCENARIO_MAP[scenario]
+        series_type = enum_value(scenario_info["series_type"])
+
+        if series_type == FolderTypeEnum.CLIMATE_ONLY.value:
+            product_name = RELATIVE_CONTROL_CLIMATE
+        elif series_type == FolderTypeEnum.CLIMATE_MANAGEMENT.value:
+            product_name = RELATIVE_CONTROL_INTERVENTION
+        else:
+            continue
+
+        scenario_folder = enum_value(scenario_info["scenario_folder"])
+
+        matching_control_df = control_df[
+            (control_df["area"] == area)
+            & (control_df["model"] == model)
+        ].copy()
+
+        if matching_control_df.empty:
+            logger.warning(
+                f"Missing control rows for {area} / {model}; "
+                f"skipping {product_name} / {scenario_folder}."
+            )
+            continue
+
+        for indicator in available_indicators:
+            indicator_name = enum_value(INDICATOR_COLUMN_MAP[indicator])
+
+            scenario_values = scenario_df[["Year", indicator]].copy()
+            scenario_values = scenario_values.rename(
+                columns={indicator: "value_scenario"}
+            )
+
+            control_values = matching_control_df[["Year", indicator]].copy()
+            control_values = control_values.rename(
+                columns={indicator: "value_control"}
+            )
+
+            merged = pd.merge(
+                scenario_values,
+                control_values,
+                on="Year",
+                how="inner",
+            )
+
+            if merged.empty:
+                logger.warning(
+                    f"No overlapping years for control comparison: "
+                    f"{scenario} / {area} / {model} / {indicator_name}"
+                )
+                continue
+
+            missing_scenario_years = set(scenario_values["Year"]) - set(merged["Year"])
+            missing_control_years = set(control_values["Year"]) - set(merged["Year"])
+
+            if missing_scenario_years:
+                logger.warning(
+                    f"Dropped scenario years without control pair: "
+                    f"{scenario_folder} / {indicator_name}: "
+                    f"{sorted(missing_scenario_years)}"
+                )
+
+            if missing_control_years:
+                logger.warning(
+                    f"Dropped control years without scenario pair: "
+                    f"{scenario_folder} / {indicator_name}: "
+                    f"{sorted(missing_control_years)}"
+                )
+
+            valid = merged["value_control"].notna()
+            valid = valid & merged["value_scenario"].notna()
+            valid = valid & (merged["value_control"] != 0)
+
+            if not valid.all():
+                logger.warning(
+                    f"Excluded {len(merged) - valid.sum()} invalid control-paired rows "
+                    f"because of NA or zero control values: "
+                    f"{scenario_folder} / {indicator_name}"
+                )
+
+            merged = merged[valid].copy()
+
+            if merged.empty:
+                logger.warning(
+                    f"No valid rows left for control comparison: "
+                    f"{scenario_folder} / {indicator_name}"
+                )
+                continue
+
+            out_df = pd.DataFrame()
+            out_df["date"] = merged["Year"].map(year_to_date)
+            out_df["value"] = relative_percent(
+                merged["value_scenario"],
+                merged["value_control"],
+            )
+            out_df = out_df.sort_values("date")
+
+            write_relative_dataframe(
+                out_df=out_df,
+                output_root=output_root,
+                product_name=product_name,
+                scenario_folder=scenario_folder,
+                indicator_name=indicator_name,
+                logger=logger,
+            )
+
+            logger.info(
+                f"{product_name} control comparison: "
+                f"scenario={scenario}, control={CONTROL_SCENARIO}, "
+                f"area={area}, model={model}, indicator={indicator_name}"
+            )
 
 
 def write_relative_dataframe(
@@ -486,137 +564,205 @@ def write_relative_dataframe(
 
     logger.info(f"Wrote {product_name} time series: {out_file}")
 
-    for legacy_product_name, canonical_product_name in LEGACY_PRODUCT_ALIASES.items():
-        if canonical_product_name != product_name:
-            continue
 
-        legacy_folder = output_root / legacy_product_name / scenario_folder / cadence
-        legacy_folder.mkdir(parents=True, exist_ok=True)
+def parse_validation_percent(value) -> float | None:
+    if pd.isna(value):
+        return None
 
-        legacy_file = legacy_folder / f"{indicator_name}.csv"
-        out_df.to_csv(legacy_file, index=False)
+    text = str(value).strip()
 
-        logger.info(
-            f"Wrote compatibility alias for {product_name}: {legacy_file}"
-        )
+    if not text:
+        return None
+
+    if text.endswith("%"):
+        text = text[:-1].strip()
+
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
-def write_relative_historical_time_series(
-    df: pd.DataFrame,
+def parse_period_years(period_value) -> tuple[int, int] | None:
+    if pd.isna(period_value):
+        return None
+
+    text = str(period_value).strip()
+
+    if "-" not in text:
+        try:
+            year = int(float(text))
+            return year, year
+        except ValueError:
+            return None
+
+    parts = text.split("-")
+
+    if len(parts) != 2:
+        return None
+
+    try:
+        start_year = int(parts[0])
+        end_year = int(parts[1])
+        return start_year, end_year
+    except ValueError:
+        return None
+
+
+def expected_product_and_scenario(raw_scenario: str) -> tuple[str, str] | None:
+    if raw_scenario not in SCENARIO_MAP:
+        return None
+
+    info = SCENARIO_MAP[raw_scenario]
+    series_type = enum_value(info["series_type"])
+    scenario_folder = enum_value(info["scenario_folder"])
+
+    if series_type == FolderTypeEnum.CLIMATE_ONLY.value:
+        return RELATIVE_CONTROL_CLIMATE, scenario_folder
+
+    if series_type == FolderTypeEnum.CLIMATE_MANAGEMENT.value:
+        return RELATIVE_CONTROL_INTERVENTION, scenario_folder
+
+    return None
+
+
+def validate_against_expected_output(
+    validation_csv: str | Path,
     output_root: Path,
-    available_indicators: list[str],
-    historical_reference_years: list[int],
     logger: logging.Logger,
+    tolerance_percentage_points: float = 1.0,
 ) -> None:
+    """Validate rCaN relative-control products against Benjamin's summary CSV.
+
+    The validation CSV currently contains an absolute block and a
+    "Relative to baseline" block. This validator uses only the latter and
+    checks the mean of the standardized relative-control output over the
+    period stated in the CSV, allowing for rounding in the provided values.
     """
-    Write explicit relative products against the historical/control Baseline.
 
-    Products written by this function:
+    validation_csv = Path(validation_csv)
 
-    - relative_historical_climate:
-      climate-only / historical endpoint
+    if not validation_csv.exists():
+        logger.warning(f"Validation CSV not found: {validation_csv}")
+        return
 
-    - relative_historical_intervention:
-      climate+management / historical endpoint
+    logger.info(f"Validating against expected output: {validation_csv}")
 
-    During Phase 1, relative_historical_intervention is also written to the
-    legacy relative_historical folder for backwards compatibility.
-    """
-    grouped = df.groupby(["scenario", "area", "model"])
+    expected = pd.read_csv(validation_csv)
+    relative_header_rows = expected.index[
+        expected["scenario"].astype(str).str.strip().str.lower()
+        == "relative to baseline"
+    ].tolist()
 
-    for (scenario, area, model), scenario_df in grouped:
-        scenario_info = SCENARIO_MAP[scenario]
-        series_type = enum_value(scenario_info["series_type"])
-
-        if series_type == FolderTypeEnum.CLIMATE_ONLY.value:
-            product_name = RELATIVE_HISTORICAL_CLIMATE
-        elif series_type == FolderTypeEnum.CLIMATE_MANAGEMENT.value:
-            product_name = RELATIVE_HISTORICAL_INTERVENTION
-        else:
-            continue
-
-        scenario_folder = enum_value(scenario_info["scenario_folder"])
-
-        anchor_df = get_historical_anchor_rows(
-            df=df,
-            area=area,
-            model=model,
-            historical_reference_years=historical_reference_years,
+    if not relative_header_rows:
+        logger.warning(
+            "Validation CSV does not contain a 'Relative to baseline' block."
         )
+        return
 
-        if anchor_df.empty:
+    relative_start = relative_header_rows[0] + 1
+    relative_rows = expected.iloc[relative_start:].copy()
+    relative_rows = relative_rows.dropna(subset=["scenario", "Year"], how="any")
+
+    checked = 0
+    failed = 0
+
+    for _, row in relative_rows.iterrows():
+        raw_scenario = str(row["scenario"]).strip()
+
+        if raw_scenario.lower() == "baseline":
+            continue
+
+        mapped = expected_product_and_scenario(raw_scenario)
+
+        if mapped is None:
             logger.warning(
-                f"Missing Baseline historical anchor rows for {area} / {model}; "
-                f"skipping {product_name} / {scenario_folder}."
+                f"Skipping validation row for unmapped/non-canonical scenario: "
+                f"{raw_scenario}"
             )
             continue
 
-        for indicator in available_indicators:
-            indicator_name = enum_value(INDICATOR_COLUMN_MAP[indicator])
-            anchor_values = anchor_df[indicator].dropna()
+        product_name, scenario_folder = mapped
+        period = parse_period_years(row["Year"])
 
-            if anchor_values.empty:
-                logger.warning(
-                    f"Missing Baseline historical anchor value for {area} / "
-                    f"{model} / {indicator_name}; skipping {product_name} / "
-                    f"{scenario_folder}."
-                )
-                continue
-
-            anchor_value = anchor_values.mean()
-
-            if anchor_value == 0:
-                logger.warning(
-                    f"Baseline historical anchor is zero for {area} / {model} / "
-                    f"{indicator_name}; skipping {product_name} / "
-                    f"{scenario_folder}."
-                )
-                continue
-
-            out_df = scenario_df[["Year", indicator]].copy()
-            out_df = out_df.rename(columns={indicator: "value"})
-
-            valid = out_df["value"].notna()
-
-            if not valid.all():
-                logger.warning(
-                    f"Excluded {len(out_df) - valid.sum()} rows with NA values "
-                    f"from {product_name}: {scenario_folder} / {indicator_name}"
-                )
-
-            out_df = out_df[valid].copy()
-
-            if out_df.empty:
-                logger.warning(
-                    f"No valid rows left for {product_name}: "
-                    f"{scenario_folder} / {indicator_name}"
-                )
-                continue
-
-            out_df["date"] = out_df["Year"].map(year_to_date)
-            out_df["value"] = relative_percent(out_df["value"], anchor_value)
-            out_df = out_df[["date", "value"]]
-
-            write_relative_dataframe(
-                out_df=out_df,
-                output_root=output_root,
-                product_name=product_name,
-                scenario_folder=scenario_folder,
-                indicator_name=indicator_name,
-                logger=logger,
+        if period is None:
+            logger.warning(
+                f"Skipping validation row with unparseable period: "
+                f"{raw_scenario} / {row['Year']}"
             )
+            continue
 
-            logger.info(
-                f"{product_name} anchor: scenario=Baseline, "
-                f"years={historical_reference_years}, value={anchor_value}"
-            )
+        start_year, end_year = period
+
+        for source_indicator, indicator_enum in INDICATOR_COLUMN_MAP.items():
+            if source_indicator not in relative_rows.columns:
+                continue
+
+            expected_value = parse_validation_percent(row.get(source_indicator))
+
+            if expected_value is None:
+                continue
+
+            indicator_name = enum_value(indicator_enum)
+            product_root = output_root / product_name / scenario_folder
+
+            candidate_files = sorted(product_root.glob(f"*/{indicator_name}.csv"))
+
+            if not candidate_files:
+                logger.warning(
+                    f"Validation missing standardized file: "
+                    f"{product_name} / {scenario_folder} / {indicator_name}"
+                )
+                continue
+
+            # rCaN is annual, but use the first cadence found to keep the
+            # validator robust to future cadence changes.
+            output_file = candidate_files[0]
+            out_df = pd.read_csv(output_file)
+            out_df["year"] = pd.to_datetime(out_df["date"]).dt.year
+            period_df = out_df[
+                (out_df["year"] >= start_year)
+                & (out_df["year"] <= end_year)
+            ]
+
+            if period_df.empty:
+                logger.warning(
+                    f"Validation period not present in {output_file}: "
+                    f"{start_year}-{end_year}"
+                )
+                continue
+
+            actual_value = float(period_df["value"].mean())
+            difference = actual_value - expected_value
+            checked += 1
+
+            if abs(difference) > tolerance_percentage_points:
+                failed += 1
+                logger.warning(
+                    f"Validation mismatch: {raw_scenario} / {indicator_name} / "
+                    f"{start_year}-{end_year}: expected {expected_value:.3f} %, "
+                    f"actual {actual_value:.3f} %, diff {difference:.3f} pp"
+                )
+            else:
+                logger.info(
+                    f"Validation OK: {raw_scenario} / {indicator_name} / "
+                    f"{start_year}-{end_year}: expected {expected_value:.3f} %, "
+                    f"actual {actual_value:.3f} %"
+                )
+
+    logger.info(
+        f"Validation complete: {checked} checks, {failed} mismatches "
+        f"> {tolerance_percentage_points} percentage points."
+    )
 
 
 if __name__ == "__main__":
     root = "cs01_barents-sea_rcan"
 
     normalise_rcan_output(
-        input_csv=path.join(root, "RCaN_output_4_ACTNOW.csv"),
+        input_csv=path.join(root, "raw", "RCaN_output_4_ACTNOW.csv"),
         output_root=path.join(root, "for_analysis"),
-        historical_reference_years=HISTORICAL_REFERENCE_YEARS,
+        # Optional: pass Benjamin's summary CSV here to validate the
+        # relative-control outputs over the reported period.
+        validation_csv=path.join(root, "RCaN_validation_ACTNOW.csv"),
     )

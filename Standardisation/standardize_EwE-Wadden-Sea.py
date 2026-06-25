@@ -1,6 +1,5 @@
 from pathlib import Path
 import logging
-import shutil
 import pandas as pd
 
 from helpers.ewe_helpers import read_ewe_timeseries_csv
@@ -46,7 +45,7 @@ TYPO_FILE_MAP = {
 
 SCENARIO_MAP = {
     "gs": ScenarioEnum.GS,
-    "iq": ScenarioEnum.IN,
+    "iq": ScenarioEnum.IQ,
     "rr": ScenarioEnum.RR,
     "wm": ScenarioEnum.WM,
 }
@@ -54,6 +53,7 @@ SCENARIO_MAP = {
 
 RUN_TYPE_MAP = {
     "base": FolderTypeEnum.CLIMATE_ONLY,
+    "baseline": FolderTypeEnum.CLIMATE_ONLY,
     "intervention": FolderTypeEnum.CLIMATE_MANAGEMENT,
 }
 
@@ -205,11 +205,6 @@ def standardise_ewe_ns(
         case_folder=case_folder,
         historical_reference_start_year=historical_reference_start_year,
         historical_reference_end_year=historical_reference_end_year,
-        logger=logger,
-    )
-
-    write_legacy_product_aliases(
-        case_folder=case_folder,
         logger=logger,
     )
 
@@ -541,53 +536,9 @@ def write_relative_historical_intervention_time_series(
                 )
 
 
-LEGACY_PRODUCT_ALIASES = {
-    "relative_intervention": "relative_climate_intervention",
-    "relative_historical": "relative_historical_intervention",
-}
-
-
-DEPRECATION_README_TEMPLATE = """# Deprecated ActNow product folder\n\nThis folder is retained as a temporary backwards-compatibility alias.\n\nLegacy product:\n\n```text\n{legacy_product}\n```\n\nCanonical replacement:\n\n```text\n{canonical_product}\n```\n\nThe CSV files in this folder are copied from the canonical replacement product.\nUse the canonical product in new plotting and analysis code.\n"""
-
-
-def write_legacy_product_aliases(
-    case_folder: Path,
-    logger: logging.Logger,
-) -> None:
-    for legacy_product, canonical_product in LEGACY_PRODUCT_ALIASES.items():
-        canonical_folder = case_folder / canonical_product
-        legacy_folder = case_folder / legacy_product
-
-        if not canonical_folder.exists():
-            logger.warning(
-                f"Cannot write legacy alias {legacy_product}; "
-                f"missing canonical folder: {canonical_folder}"
-            )
-            continue
-
-        if legacy_folder.exists():
-            shutil.rmtree(legacy_folder)
-
-        shutil.copytree(canonical_folder, legacy_folder)
-
-        readme_file = legacy_folder / "README_DEPRECATED.md"
-        readme_file.write_text(
-            DEPRECATION_README_TEMPLATE.format(
-                legacy_product=legacy_product,
-                canonical_product=canonical_product,
-            ),
-            encoding="utf-8",
-        )
-
-        logger.info(
-            f"Wrote legacy compatibility alias: "
-            f"{legacy_product} -> {canonical_product}"
-        )
-
-
 if __name__ == "__main__":
     standardise_ewe_ns(
-        input_root=r"cs06_wadden-sea_ewe-ecospace",
+        input_root=r"cs06_wadden-sea_ewe-ecospace/raw",
         output_root=r"cs06_wadden-sea_ewe-ecospace/for_analysis",
         case_study="cs06",
         area="wadden-sea    "
