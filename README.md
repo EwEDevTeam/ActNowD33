@@ -1,2 +1,2 @@
-# ActNowD33
-EU project ActNow - Deliverable 3.3 scripts
+# ActNowD33 - Collaborative modelling
+Scripts to standardize MEM output, and to plot the output, for EU project ActNow deliverable D3.3.
