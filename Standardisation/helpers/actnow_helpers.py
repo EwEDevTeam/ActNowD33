@@ -39,7 +39,7 @@ class IndicatorEnum(Enum):
 #
 class ScenarioEnum(Enum):
     GS = "gs" # Global sustainability
-    IN = "in" # Inequality
+    IQ = "iq" # Inequality
     RR = "rr" # Regional rivaly
     WM = "wm" # World market
 

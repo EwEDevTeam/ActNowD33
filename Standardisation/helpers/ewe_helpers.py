@@ -191,3 +191,10 @@ def read_ewe_timeseries_csv_that_isnt_properly_aggregated(path: Path, logger) ->
     out_df = out_df.sort_values("date")
 
     return out_df
+
+
+def enum_value(value) -> str:
+    if hasattr(value, "value"):
+        return value.value
+
+    return str(value)
