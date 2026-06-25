@@ -17,7 +17,7 @@ UTILS_FILE <- "actnow_data_utils_v0_2.r"
 
 PLOT_TYPE <- "annual_climate_vs_management_cloud"
 
-INDICATOR_FILTER <- "total_biomass"
+INDICATOR_FILTER <- "mean_trophic_level"
 PRODUCT_FILTER <- "relative_historical|relative_intervention"
 CASE_STUDY_FILTER <- NULL
 SCENARIO_FILTER <- NULL
