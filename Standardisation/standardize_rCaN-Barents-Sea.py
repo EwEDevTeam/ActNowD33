@@ -30,6 +30,11 @@ INDICATOR_COLUMN_MAP = {
 # rCaN does not represent the full lower trophic spectrum used by some other MEMs.
 # Benjamin Planque confirmed that, for this model output, consumer_biomass and
 # total_biomass should be treated as equivalent ActNow indicators.
+#
+# The raw rCaN file therefore does not necessarily contain a total_biomass
+# column. This adapter creates one from consumer_biomass before the list of
+# available indicators is detected, so total_biomass is written to all absolute
+# and relative products exactly like any other indicator.
 TOTAL_BIOMASS_FALLBACK_SOURCE = "consumer_biomass"
 
 
@@ -44,12 +49,18 @@ SCENARIO_MAP = {
         "series_type": "historical_context",
     },
 
-    # rCaN control trajectory. This is not a fixed historical reference period.
-    # It is a time-varying control simulation aligned with the scenario years.
+    # Benjamin Planque requested that rCaN scenarios be compared to the
+    # corresponding years of the Baseline scenario, rather than to a fixed
+    # historical reference period. In the common ActNow terminology this is
+    # therefore treated as a relative_control_* product.
+    #
+    # Note that the rCaN scenario named "Baseline" is not used here as a
+    # historical baseline slice. It is a year-matched control trajectory.
     CONTROL_SCENARIO: {
         "scenario_folder": "control",
         "series_type": "control",
     },
+
     "BaselineRieu": {
         "scenario_folder": "baseline-rieu",
         "series_type": "reference",
@@ -146,6 +157,52 @@ def relative_percent(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     return 100.0 * ((numerator / denominator) - 1.0)
 
 
+def ensure_total_biomass_indicator(
+    df: pd.DataFrame,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """Ensure that rCaN provides the ActNow total_biomass indicator.
+
+    rCaN does not provide an independent total_biomass estimate because, for
+    this model output, total biomass and consumer biomass are equivalent.
+    Benjamin Planque confirmed that consumer_biomass should therefore be used
+    as the ActNow total_biomass indicator.
+
+    This is applied to the full input table, including the Baseline control
+    trajectory, before available indicators are detected and before relative
+    products are calculated.
+    """
+
+    if TOTAL_BIOMASS_FALLBACK_SOURCE not in df.columns:
+        logger.warning(
+            "Input file does not contain consumer_biomass. "
+            "The total_biomass indicator cannot be derived for rCaN."
+        )
+        return df
+
+    df = df.copy()
+
+    if "total_biomass" in df.columns:
+        missing_before = df["total_biomass"].isna().sum()
+
+        # For rCaN, total_biomass is defined as consumer_biomass. Overwrite
+        # rather than only filling gaps to avoid mixed provenance.
+        df["total_biomass"] = df[TOTAL_BIOMASS_FALLBACK_SOURCE]
+
+        logger.info(
+            "Replaced total_biomass with consumer_biomass for all rCaN rows. "
+            f"Missing total_biomass values before replacement: {missing_before}."
+        )
+    else:
+        df["total_biomass"] = df[TOTAL_BIOMASS_FALLBACK_SOURCE]
+
+        logger.info(
+            "Added total_biomass from consumer_biomass for all rCaN rows."
+        )
+
+    return df
+
+
 def normalise_rcan_output(
     input_csv: str | Path,
     output_root: str | Path,
@@ -159,22 +216,12 @@ def normalise_rcan_output(
 
     logger.info(f"Reading input CSV: {input_csv}")
     logger.info(
-        "rCaN uses a time-varying control trajectory rather than a fixed "
+        "rCaN uses a year-matched control trajectory rather than a fixed "
         "historical reference period. Writing relative_control_* products "
         "instead of relative_historical_* products."
     )
 
     df = pd.read_csv(input_csv)
-
-    if (
-        "total_biomass" not in df.columns
-        and TOTAL_BIOMASS_FALLBACK_SOURCE in df.columns
-    ):
-        df["total_biomass"] = df[TOTAL_BIOMASS_FALLBACK_SOURCE]
-        logger.info(
-            "Added total_biomass from consumer_biomass. "
-            "For rCaN these indicators were confirmed to be equivalent."
-        )
 
     required = {"scenario", "Year", "area", "model"}
     missing = required - set(df.columns)
@@ -183,6 +230,8 @@ def normalise_rcan_output(
         msg = f"Missing required columns: {sorted(missing)}"
         logger.error(msg)
         raise ValueError(msg)
+
+    df = ensure_total_biomass_indicator(df=df, logger=logger)
 
     unknown_scenarios = sorted(set(df["scenario"]) - set(SCENARIO_MAP))
 
@@ -297,11 +346,15 @@ def write_relative_climate_intervention_time_series(
         climate_only_folder_name = enum_value(paired_info["scenario_folder"])
 
         climate_management_root = (
-            output_root / FolderTypeEnum.CLIMATE_MANAGEMENT.value / management_folder_name
+            output_root
+            / FolderTypeEnum.CLIMATE_MANAGEMENT.value
+            / management_folder_name
         )
 
         climate_only_root = (
-            output_root / FolderTypeEnum.CLIMATE_ONLY.value / climate_only_folder_name
+            output_root
+            / FolderTypeEnum.CLIMATE_ONLY.value
+            / climate_only_folder_name
         )
 
         if not climate_management_root.exists():
@@ -636,7 +689,7 @@ def validate_against_expected_output(
 
     The validation CSV currently contains an absolute block and a
     "Relative to baseline" block. This validator uses only the latter and
-    checks the mean of the standardized relative-control output over the
+    checks the mean of the standardised relative-control output over the
     period stated in the CSV, allowing for rounding in the provided values.
     """
 
@@ -710,7 +763,7 @@ def validate_against_expected_output(
 
             if not candidate_files:
                 logger.warning(
-                    f"Validation missing standardized file: "
+                    f"Validation missing standardised file: "
                     f"{product_name} / {scenario_folder} / {indicator_name}"
                 )
                 continue
